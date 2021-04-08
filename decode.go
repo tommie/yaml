@@ -229,6 +229,7 @@ type decoder struct {
 	mapType reflect.Type
 	terrors []string
 	strict  bool
+	dups    bool
 
 	decodeCount int
 	aliasCount  int
@@ -244,8 +245,8 @@ var (
 	ptrTimeType    = reflect.TypeOf(&time.Time{})
 )
 
-func newDecoder(strict bool) *decoder {
-	d := &decoder{mapType: defaultMapType, strict: strict}
+func newDecoder(strict, dups bool) *decoder {
+	d := &decoder{mapType: defaultMapType, strict: strict, dups: dups}
 	d.aliases = make(map[*node]bool)
 	return d
 }
@@ -722,7 +723,7 @@ func (d *decoder) mappingSlice(n *node, out reflect.Value) (good bool) {
 }
 
 func (d *decoder) mappingStruct(n *node, out reflect.Value) (good bool) {
-	sinfo, err := getStructInfo(out.Type())
+	sinfo, err := getStructInfo(out.Type(), d.dups)
 	if err != nil {
 		panic(err)
 	}

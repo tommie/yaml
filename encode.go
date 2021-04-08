@@ -31,6 +31,7 @@ type encoder struct {
 	event   yaml_event_t
 	out     []byte
 	flow    bool
+	dups    bool
 	// doneInit holds whether the initial stream_start_event has been
 	// emitted.
 	doneInit bool
@@ -206,7 +207,7 @@ func (e *encoder) itemsv(tag string, in reflect.Value) {
 }
 
 func (e *encoder) structv(tag string, in reflect.Value) {
-	sinfo, err := getStructInfo(in.Type())
+	sinfo, err := getStructInfo(in.Type(), e.dups)
 	if err != nil {
 		panic(err)
 	}

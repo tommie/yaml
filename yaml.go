@@ -78,7 +78,7 @@ type Marshaler interface {
 // supported tag options.
 //
 func Unmarshal(in []byte, out interface{}) (err error) {
-	return unmarshal(in, out, false)
+	return unmarshal(in, out, false, false)
 }
 
 // UnmarshalStrict is like Unmarshal except that any fields that are found
@@ -86,12 +86,13 @@ func Unmarshal(in []byte, out interface{}) (err error) {
 // keys that are duplicates, will result in
 // an error.
 func UnmarshalStrict(in []byte, out interface{}) (err error) {
-	return unmarshal(in, out, true)
+	return unmarshal(in, out, true, false)
 }
 
 // A Decoder reads and decodes YAML values from an input stream.
 type Decoder struct {
 	strict bool
+	dups   bool
 	parser *parser
 }
 
@@ -111,13 +112,17 @@ func (dec *Decoder) SetStrict(strict bool) {
 	dec.strict = strict
 }
 
+func (dec *Decoder) SetAllowDuplicates(dups bool) {
+	dec.dups = dups
+}
+
 // Decode reads the next YAML-encoded value from its input
 // and stores it in the value pointed to by v.
 //
 // See the documentation for Unmarshal for details about the
 // conversion of YAML into a Go value.
 func (dec *Decoder) Decode(v interface{}) (err error) {
-	d := newDecoder(dec.strict)
+	d := newDecoder(dec.strict, dec.dups)
 	defer handleErr(&err)
 	node := dec.parser.parse()
 	if node == nil {
@@ -134,9 +139,9 @@ func (dec *Decoder) Decode(v interface{}) (err error) {
 	return nil
 }
 
-func unmarshal(in []byte, out interface{}, strict bool) (err error) {
+func unmarshal(in []byte, out interface{}, strict, dups bool) (err error) {
 	defer handleErr(&err)
-	d := newDecoder(strict)
+	d := newDecoder(strict, dups)
 	p := newParser(in)
 	defer p.destroy()
 	node := p.parse()
@@ -218,6 +223,10 @@ func NewEncoder(w io.Writer) *Encoder {
 	return &Encoder{
 		encoder: newEncoderWithWriter(w),
 	}
+}
+
+func (e *Encoder) SetAllowDuplicates(dups bool) {
+	e.encoder.dups = dups
 }
 
 // Encode writes the YAML encoding of v to the stream.
@@ -307,7 +316,7 @@ type fieldInfo struct {
 var structMap = make(map[reflect.Type]*structInfo)
 var fieldMapMutex sync.RWMutex
 
-func getStructInfo(st reflect.Type) (*structInfo, error) {
+func getStructInfo(st reflect.Type, dups bool) (*structInfo, error) {
 	fieldMapMutex.RLock()
 	sinfo, found := structMap[st]
 	fieldMapMutex.RUnlock()
@@ -364,19 +373,31 @@ func getStructInfo(st reflect.Type) (*structInfo, error) {
 				}
 				inlineMap = info.Num
 			case reflect.Struct:
-				sinfo, err := getStructInfo(field.Type)
+				sinfo, err := getStructInfo(field.Type, dups)
 				if err != nil {
 					return nil, err
 				}
 				for _, finfo := range sinfo.FieldsList {
-					if _, found := fieldsMap[finfo.Key]; found {
-						msg := "Duplicated key '" + finfo.Key + "' in struct " + st.String()
-						return nil, errors.New(msg)
-					}
 					if finfo.Inline == nil {
 						finfo.Inline = []int{i, finfo.Num}
 					} else {
 						finfo.Inline = append([]int{i}, finfo.Inline...)
+					}
+					if finfo2, found := fieldsMap[finfo.Key]; found {
+						if !dups || len(finfo.Inline) == len(finfo2.Inline) {
+							msg := "Duplicated key '" + finfo.Key + "' in struct " + st.String()
+							return nil, errors.New(msg)
+						}
+						if len(finfo.Inline) > len(finfo2.Inline) {
+							// The new field is at a deeper nesting level, so we ignore it.
+							continue
+						}
+						for i, finfo3 := range fieldsList {
+							if finfo3.Key == finfo.Key {
+								fieldsList = append(fieldsList[:i], fieldsList[i+1:]...)
+								break
+							}
+						}
 					}
 					finfo.Id = len(fieldsList)
 					fieldsMap[finfo.Key] = finfo
@@ -396,8 +417,16 @@ func getStructInfo(st reflect.Type) (*structInfo, error) {
 		}
 
 		if _, found = fieldsMap[info.Key]; found {
-			msg := "Duplicated key '" + info.Key + "' in struct " + st.String()
-			return nil, errors.New(msg)
+			if !dups {
+				msg := "Duplicated key '" + info.Key + "' in struct " + st.String()
+				return nil, errors.New(msg)
+			}
+			for i, finfo3 := range fieldsList {
+				if finfo3.Key == info.Key {
+					fieldsList = append(fieldsList[:i], fieldsList[i+1:]...)
+					break
+				}
+			}
 		}
 
 		info.Id = len(fieldsList)
